@@ -42,33 +42,67 @@ app.post('/monitors', (req, res) => {
 
 app.post('/monitors/:id/check', async (req, res) => {
     const id = Number(req.params.id);
-    const monitor = monitors.find(m => m.id === id);
-    if (!monitor) {
-        return res.status(404).json({ message: 'Not found' });
-    }
-    const startTime = Date.now();
-    try {
 
-        const response = await fetch(monitor.url);
-        const endTime = Date.now();
+    const monitor = monitors.find(m => m.id === id);
+
+    if (!monitor) {
+        return res.status(404).json({
+            message: 'Monitor not found'
+        });
+    }
+
+    const startTime = Date.now();
+    const controller = new AbortController();
+
+    const timeoutId = setTimeout(() => {
+        controller.abort();
+    }, 5000);
+
+    try {
+        const response = await fetch(monitor.url, {
+            signal: controller.signal
+        });
+
+        const responseTime = Date.now() - startTime;
 
         monitor.status = response.ok ? "UP" : "DOWN";
-        monitor.lastCheck = {
+
+        const checkResult = {
+            status: monitor.status,
             statusCode: response.status,
-            responseTime: endTime - startTime,
-            checkedAt: new Date().toISOString(),
-        }
-    } catch (err) {
-        monitor.status = "DOWN";
-        monitor.lastCheck = {
-            statusCode: null,
-            error: err.code || 'ERROR',
-            responseTime: Date.now() - startTime,
-            checkedAt: new Date().toISOString(),
+            responseTime,
+            checkedAt: new Date().toISOString()
         };
+
+        monitor.lastCheck = checkResult;
+        monitor.history.push(checkResult);
+
+        res.json(monitor);
+
+    } catch (err) {
+
+        monitor.status = "DOWN";
+
+        const checkResult = {
+            status: "DOWN",
+            statusCode: null,
+            error: err.name === "AbortError"
+                ? "Request timed out"
+                : err.message,
+            responseTime: Date.now() - startTime,
+            checkedAt: new Date().toISOString()
+        };
+
+        monitor.lastCheck = checkResult;
+        monitor.history.push(checkResult);
+
+        res.json(monitor);
+
+    } finally {
+        clearTimeout(timeoutId);
     }
-    res.json(monitor);
-})
+});
+
 app.get('/monitors', (req, res) => {
     res.json(monitors);
 });
@@ -96,6 +130,13 @@ app.delete('/monitors/:id', (req, res) => {
     res.json(deletedMonitor);
 });
 
+app.get('/summary', (req, res) => {
+    const total = monitors.length;
+    const up = monitors.filter(m => m.status === 'UP').length;
+    const down = monitors.filter(m => m.status === 'DOWN').length;
+    const unknown = monitors.filter(m => m.status === 'pending').length;
+    res.json({ total, up, down, unknown });
+})
 
 
 // Start server
